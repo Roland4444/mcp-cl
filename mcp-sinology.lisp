@@ -1,3 +1,6 @@
+;; -*- coding: utf-8 -*-
+;; MCP-сервер для Synology NAS (финальная версия с dispatcher'ами)
+
 (require :asdf)
 
 (asdf:load-system :hunchentoot)
@@ -6,76 +9,48 @@
 
 (defpackage #:mcp-sinology
   (:use #:cl #:hunchentoot #:cl-json)
-  (:export      #:main                      #:start-server              #:stop-server)
-)
+  (:export #:main #:start-server #:stop-server))
 
-(in-package     #:mcp-sinology)
+(in-package #:mcp-sinology)
 
+;; ============================================
+;; Конфигурация
+;; ============================================
 
-(defvar *config* (make-hash-table :test #'equal)
-  "Таблица с настройками сервера.")
-
+(defvar *config* (make-hash-table :test #'equal))
 (defvar *default-config*
   `(("synology-url" . "https://127.0.0.1:5001")
     ("synology-username" . "user")
     ("synology-password" . "pass")
     ("verify-ssl" . "false")
-    ("server-port" . 8080))
-  "Список пар (ключ . значение) по умолчанию.")
+    ("server-port" . 8080)))
 
 (defun save-config (&optional (filename "config-mcp.lisp"))
-  "Сохраняет текущую конфигурацию в FILENAME, форматируя каждую пару на отдельной строке."
-  (with-open-file (out filename
-                       :direction :output
-                       :if-exists :supersede
-                       :external-format :utf-8)
-    (with-standard-io-syntax
-      (let ((*print-readably* t)
-            (*print-pretty* t)
-            (*print-right-margin* 120))
-        (let ((alist (loop for key being the hash-keys of *config*
-                           collect (cons key (gethash key *config*)))))
-          (pprint alist out)
-          (terpri out))))))
+  (with-open-file (out filename :direction :output :if-exists :supersede :external-format :utf-8)
+    (let ((*print-readably* t) (*print-pretty* t) (*print-right-margin* 120))
+      (let ((alist (loop for key being the hash-keys of *config*
+                         collect (cons key (gethash key *config*)))))
+        (pprint alist out)
+        (terpri out)))))
 
 (defun load-config (&optional (filename "config-mcp.lisp"))
-  "Загружает конфигурацию из FILENAME, если файл существует.
-   Если файла нет, используется *DEFAULT-CONFIG* и создаётся новый файл."
-  ;; Сначала заполняем таблицу значениями по умолчанию
   (clrhash *config*)
   (dolist (pair *default-config*)
     (setf (gethash (car pair) *config*) (cdr pair)))
-  
-  ;; Если файл существует, читаем его и обновляем таблицу
   (when (probe-file filename)
-    (with-open-file (in filename
-                        :direction :input
-                        :external-format :utf-8)
-      (with-standard-io-syntax
-        (let ((alist (read in)))
-          (dolist (pair alist)
-            (setf (gethash (car pair) *config*) (cdr pair))))))
+    (with-open-file (in filename :direction :input :external-format :utf-8)
+      (let ((alist (read in)))
+        (dolist (pair alist)
+          (setf (gethash (car pair) *config*) (cdr pair)))))
     (format t "Конфигурация загружена из ~A~%" filename))
-  
-  ;; Сохраняем текущую таблицу в файл (если его не было, он создастся)
   (save-config filename)
   *config*)
 
-(defun reload-config ()
-  "Перезагружает конфигурацию из файла (сбрасывая изменения)."
-  (load-config))
-
-;; Удобные функции доступа к настройкам
-(defun config-value (key &optional (default nil))
-  (gethash key *config* default))
-
-(defun (setf config-value) (value key)
-  (setf (gethash key *config*) value))
+(defun config-value (key &optional (default nil)) (gethash key *config* default))
 
 ;; ============================================
-;; Инициализация конфигурации при загрузке
+;; Параметры сервера
 ;; ============================================
-
 
 (defvar *synology-url* nil)
 (defvar *synology-username* nil)
@@ -84,13 +59,12 @@
 (defvar *server-port* nil)
 
 ;; ============================================
-;; Потокобезопасный SID (используем sb-thread mutex)
+;; SID и авторизация
 ;; ============================================
 
 (defvar *sid-lock* (sb-thread:make-mutex))
 (defmacro with-lock-held ((lock) &body body)
   `(sb-thread:with-mutex (,lock) ,@body))
-
 (defvar *sid* nil)
 
 (defun login ()
@@ -105,7 +79,7 @@
     (multiple-value-bind (body status headers)
         (dexador:post url :form params :ssl-verify *verify-ssl*)
       (declare (ignore status headers))
-      (let ((json (cl-json:decode-json-from-string body)))
+      (let ((json (cl-json:decode-json-from-string body :json-symbols t)))
         (if (and (gethash "success" json) (gethash "success" json))
             (gethash "sid" (gethash "data" json))
             (error "Ошибка входа: ~a" json))))))
@@ -120,7 +94,7 @@
     (setf *sid* (login))))
 
 ;; ============================================
-;; Вызов API FileStation
+;; API вызовы
 ;; ============================================
 
 (defun call-filestation-api (api method &rest additional-params)
@@ -135,7 +109,7 @@
              (multiple-value-bind (body status)
                  (dexador:get url :query params :ssl-verify *verify-ssl*)
                (if (= status 200)
-                   (let ((json (cl-json:decode-json-from-string body)))
+                   (let ((json (cl-json:decode-json-from-string body :json-symbols t)))
                      (if (and (gethash "success" json) (gethash "success" json))
                          (gethash "data" json)
                          (if (and (gethash "error" json)
@@ -179,7 +153,7 @@
                         "folder_path" path "pattern" pattern "recursive" "true"))
 
 ;; ============================================
-;; JSON‑RPC 2.0 обработчики
+;; JSON-RPC 2.0 (ключи — символы)
 ;; ============================================
 
 (defun alist->json (alist)
@@ -233,55 +207,71 @@
       (let ((result
              (cond
                ((string= name "list_files")
-                (make-tool-result (alist->json (list-files (gethash "path" arguments)))))
+                (make-tool-result (alist->json (list-files (cdr (assoc :path arguments))))))
                ((string= name "get_file_info")
-                (make-tool-result (alist->json (get-file-info (gethash "path" arguments)))))
+                (make-tool-result (alist->json (get-file-info (cdr (assoc :path arguments))))))
                ((string= name "read_file")
-                (make-tool-result (read-file (gethash "path" arguments))))
+                (make-tool-result (read-file (cdr (assoc :path arguments)))))
                ((string= name "search_files")
-                (make-tool-result (alist->json (search-files (gethash "path" arguments)
-                                                             (gethash "pattern" arguments)))))
+                (make-tool-result (alist->json (search-files (cdr (assoc :path arguments))
+                                                             (cdr (assoc :pattern arguments))))))
                (t (send-json-error id -32601 "Метод не найден")))))
         (send-json-response id result))
     (error (e) (send-json-error id -32000 (format nil "Ошибка: ~a" e)))))
 
-(defun handle-request (json)
-  (let* ((method (gethash "method" json))
-         (id (gethash "id" json))
-         (params (gethash "params" json)))
+(defun process-json-request (json)
+  (let* ((method (cdr (assoc :method json)))
+         (id (cdr (assoc :id json)))
+         (params (cdr (assoc :params json))))
     (cond
       ((string= method "tools/list") (handle-tools-list id))
       ((string= method "tools/call")
-       (let ((tool-name (gethash "name" params))
-             (args (gethash "arguments" params)))
-         (handle-tools-call id tool-name (or args (make-hash-table)))))
+       (let ((tool-name (cdr (assoc :name params)))
+             (args (cdr (assoc :arguments params))))
+         (handle-tools-call id tool-name (or args nil))))
       (t (send-json-error id -32601 (format nil "Неизвестный метод: ~a" method))))))
 
 ;; ============================================
-;; Обработчик Hunchentoot
+;; Обработчики HTTP (без define-easy-handler)
 ;; ============================================
 
-(defun mcp-handler ()
-  (cond
-    ((string= (hunchentoot:request-method*) "POST")
-     (let* ((body (hunchentoot:raw-post-data :force-text t))
-            (json (cl-json:decode-json-from-string body))
-            (response (handle-request json)))
-       (setf (hunchentoot:content-type*) "application/json")
-       response))
-    (t (setf (hunchentoot:return-code*) 405) "Method Not Allowed")))
+(defun hello-handler (request)
+  (declare (ignore request))
+  (setf (content-type*) "text/plain")
+  "hello")
 
-(push (hunchentoot:create-regex-dispatcher "^/mcp$" #'mcp-handler)
-      hunchentoot:*dispatch-table*)
+(defun mcp-handler (request)
+  (declare (ignore request))
+  (if (string= (request-method*) "POST")
+      (handler-case
+          (let* ((body (raw-post-data :force-text t))
+                 (json (cl-json:decode-json-from-string body :json-symbols t))
+                 (response (process-json-request json)))
+            (setf (content-type*) "application/json")
+            response)
+        (error (e)
+          (setf (return-code*) 500)
+          (format nil "Internal error: ~a" e)))
+      (progn
+        (setf (return-code*) 405)
+        "Method Not Allowed")))
+
+;; Регистрируем обработчики через диспетчеры (очищаем старые)
+(setf hunchentoot:*dispatch-table*
+      (list (hunchentoot:create-prefix-dispatcher "/hello" #'hello-handler)
+            (hunchentoot:create-prefix-dispatcher "/mcp" #'mcp-handler)))
 
 ;; ============================================
-;; Запуск / остановка сервера
+;; Запуск / остановка
 ;; ============================================
 
 (defvar *server* nil)
 
 (defun start-server (&key (port *server-port*))
-  (let ((acceptor (make-instance 'hunchentoot:easy-acceptor :port port)))
+  (let ((acceptor (make-instance 'hunchentoot:easy-acceptor 
+                                 :port port
+                                 :read-timeout 300
+                                 :write-timeout 300)))
     (hunchentoot:start acceptor)
     (setf *server* acceptor)
     (format t "~&MCP-сервер Synology запущен на порту ~a~%" port)
@@ -294,22 +284,15 @@
     (setf *server* nil)
     (format t "~&Сервер остановлен~%")))
 
-;; ============================================
-;; Функция main – загружает конфиг и запускает сервер
-;; ============================================
-
 (defun main ()
-  ;; 1. Загружаем конфигурацию из файла (или создаём по умолчанию)
-  (load-config)   ; теперь это вызывается при каждом запуске бинарника
-  ;; 2. Устанавливаем параметры сервера из конфига
+  (load-config)
   (setf *synology-url* (config-value "synology-url"))
   (setf *synology-username* (config-value "synology-username"))
   (setf *synology-password* (config-value "synology-password"))
   (setf *verify-ssl* (not (string= (config-value "verify-ssl") "false")))
   (setf *server-port* (parse-integer (format nil "~a" (config-value "server-port"))))
-  ;; 3. Запускаем сервер
   (start-server :port *server-port*)
-  ;; 4. Бесконечный цикл (сервер работает в фоновых потоках)
   (loop (sleep 10)))
 
+  ;;; sbcl --noinform --disable-debugger --load mcp-sinology.lisp --eval "(mcp-sinology:main)"
   ;;; sbcl --load mcp-sinology.lisp    --eval "(sb-ext:save-lisp-and-die \"mcp-sinology\" :toplevel #'mcp-sinology:main :executable t :purify t)"
