@@ -76,13 +76,12 @@
 ;; Инициализация конфигурации при загрузке
 ;; ============================================
 
-(load-config)
 
-(defparameter *synology-url* (config-value "synology-url"))
-(defparameter *synology-username* (config-value "synology-username"))
-(defparameter *synology-password* (config-value "synology-password"))
-(defparameter *verify-ssl* (not (string= (config-value "verify-ssl") "false")))
-(defparameter *server-port* (parse-integer (format nil "~a" (config-value "server-port"))))
+(defvar *synology-url* nil)
+(defvar *synology-username* nil)
+(defvar *synology-password* nil)
+(defvar *verify-ssl* nil)
+(defvar *server-port* nil)
 
 ;; ============================================
 ;; Потокобезопасный SID (используем sb-thread mutex)
@@ -276,7 +275,7 @@
       hunchentoot:*dispatch-table*)
 
 ;; ============================================
-;; Запуск / остановка сервера (исправлено)
+;; Запуск / остановка сервера
 ;; ============================================
 
 (defvar *server* nil)
@@ -295,11 +294,22 @@
     (setf *server* nil)
     (format t "~&Сервер остановлен~%")))
 
+;; ============================================
+;; Функция main – загружает конфиг и запускает сервер
+;; ============================================
+
 (defun main ()
-  (start-server)
+  ;; 1. Загружаем конфигурацию из файла (или создаём по умолчанию)
+  (load-config)   ; теперь это вызывается при каждом запуске бинарника
+  ;; 2. Устанавливаем параметры сервера из конфига
+  (setf *synology-url* (config-value "synology-url"))
+  (setf *synology-username* (config-value "synology-username"))
+  (setf *synology-password* (config-value "synology-password"))
+  (setf *verify-ssl* (not (string= (config-value "verify-ssl") "false")))
+  (setf *server-port* (parse-integer (format nil "~a" (config-value "server-port"))))
+  ;; 3. Запускаем сервер
+  (start-server :port *server-port*)
+  ;; 4. Бесконечный цикл (сервер работает в фоновых потоках)
   (loop (sleep 10)))
 
-;; Автозапуск при загрузке
-#+sbcl
-(when (equal (pathname-name *load-truename*) "mcp-sinology")
-  (main))
+  ;;; sbcl --load mcp-sinology.lisp    --eval "(sb-ext:save-lisp-and-die \"mcp-sinology\" :toplevel #'mcp-sinology:main :executable t :purify t)"
