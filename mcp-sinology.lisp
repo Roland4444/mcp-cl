@@ -6,10 +6,13 @@
 (asdf:load-system :hunchentoot)
 (asdf:load-system :cl-json)
 (asdf:load-system :dexador)
+(asdf:load-system :quri)
+
 
 (defpackage #:mcp-sinology
+
   (:use #:cl #:hunchentoot #:cl-json)
-  (:export #:main #:start-server #:stop-server))
+  (:export #:main #:start-server #:stop-server  #:test-connection))
 
 (in-package #:mcp-sinology)
 
@@ -22,7 +25,6 @@
   `(("synology-url" . "https://127.0.0.1:5001")
     ("synology-username" . "user")
     ("synology-password" . "pass")
-    ("verify-ssl" . "false")
     ("server-port" . 8080)))
 
 (defun save-config (&optional (filename "config-mcp.lisp"))
@@ -68,21 +70,97 @@
 (defvar *sid* nil)
 
 (defun login ()
-  (let ((url (format nil "~a/webapi/auth.cgi" *synology-url*))
-        (params `(("api" . "SYNO.API.Auth")
-                  ("version" . "3")
-                  ("method" . "login")
-                  ("account" . ,*synology-username*)
-                  ("passwd" . ,*synology-password*)
-                  ("session" . "FileStation")
-                  ("format" . "cookie"))))
-    (multiple-value-bind (body status headers)
-        (dexador:post url :form params :ssl-verify *verify-ssl*)
-      (declare (ignore status headers))
-      (let ((json (cl-json:decode-json-from-string body :json-symbols t)))
-        (if (and (gethash "success" json) (gethash "success" json))
-            (gethash "sid" (gethash "data" json))
-            (error "Ошибка входа: ~a" json))))))
+  (let* ((url (config-value "synology-url"))
+         (user (config-value "synology-username"))
+         (pass (config-value "synology-password")))
+    (format t "~&[DEBUG] login: url=~S, user=~S, pass=~S~%" url user pass)
+    (unless (and url user pass)
+      (error "Synology credentials not set. Check config file."))
+    (let ((params `(("api" . "SYNO.API.Auth")
+                    ("version" . "3")
+                    ("method" . "login")
+                    ("account" . ,user)
+                    ("passwd" . ,pass)
+                    ("session" . "FileStation")
+                    ("format" . "cookie"))))
+      (let ((body (with-output-to-string (s)
+                    (loop for (key . val) in params
+                          for i from 0
+                          do (unless (zerop i) (write-char #\& s))
+                          (write-string key s)
+                          (write-char #\= s)
+                          (write-string (quri:url-encode (princ-to-string val)) s)))))
+        (multiple-value-bind (response status headers)
+            (dex:post (format nil "~a/webapi/auth.cgi" url)
+                      :content body
+                      :headers '(("Content-Type" . "application/x-www-form-urlencoded"))
+                      :insecure t)   ; <-- правильный ключ
+          (declare (ignore status headers))
+          (let ((json (cl-json:decode-json-from-string response)))
+            (if (cdr (assoc :success json))
+                (cdr (assoc :sid (cdr (assoc :data json))))
+                (error "Login failed: ~a" json))))))))
+
+
+; (defun login ()
+;   (let* ((url (config-value "synology-url"))
+;          (user (config-value "synology-username"))
+;          (pass (config-value "synology-password")))
+;     (format t "~&[DEBUG] login: url=~S, user=~S, pass=~S~%" url user pass)
+;     (unless (and url user pass)
+;       (error "Synology credentials not set. Check config file."))
+;     (let ((params `(("api" . "SYNO.API.Auth")
+;                     ("version" . "3")
+;                     ("method" . "login")
+;                     ("account" . ,user)
+;                     ("passwd" . ,pass)
+;                     ("session" . "FileStation")
+;                     ("format" . "cookie"))))
+;       (let ((body (with-output-to-string (s)
+;                     (loop for (key . val) in params
+;                           for i from 0
+;                           do (unless (zerop i) (write-char #\& s))
+;                           (write-string key s)
+;                           (write-char #\= s)
+;                           (write-string (quri:url-encode (princ-to-string val)) s)))))
+;         (multiple-value-bind (response status headers)
+;             (dex:post (format nil "~a/webapi/auth.cgi" url)
+;                       :content body
+;                       :headers '(("Content-Type" . "application/x-www-form-urlencoded"))
+;                       :insecure t)   ; <-- правильный ключ
+;           (declare (ignore status headers))
+;           (let ((json (cl-json:decode-json-from-string response)))
+;             (if (cdr (assoc :success json))
+;                 (cdr (assoc :sid (cdr (assoc :data json))))
+;                 (error "Login failed: ~a" json))))))))
+
+
+
+; (defun login ()
+;   (let ((url (format nil "~a/webapi/auth.cgi" *synology-url*))
+;         (params `(("api" . "SYNO.API.Auth")
+;                   ("version" . "3")
+;                   ("method" . "login")
+;                   ("account" . ,*synology-username*)
+;                   ("passwd" . ,*synology-password*)
+;                   ("session" . "FileStation")
+;                   ("format" . "cookie"))))
+;     (multiple-value-bind (body status headers)
+;         (dex:post url 
+;                   :content (with-output-to-string (s)
+;                              (loop for (key . val) in params
+;                                    for i from 0
+;                                    do (unless (zerop i) (write-char #\& s))
+;                                    (write-string key s)
+;                                    (write-char #\= s)
+;                                    (write-string (quri:url-encode (princ-to-string val) :utf-8) s)))
+;                   :headers '(("Content-Type" . "application/x-www-form-urlencoded"))
+;                   :want-string t)
+;       (declare (ignore status headers))
+;       (let ((json (cl-json:decode-json-from-string body)))
+;         (if (and (gethash "success" json) (gethash "success" json))
+;             (gethash "sid" (gethash "data" json))
+;             (error "Ошибка входа: ~a" json))))))
 
 (defun ensure-sid ()
   (with-lock-held (*sid-lock*)
@@ -97,31 +175,87 @@
 ;; API вызовы
 ;; ============================================
 
+
+
+;;;dickpic
+; (defun call-filestation-api (api method &rest additional-params)
+;   (flet ((do-call (sid)
+;            (let* ((url (config-value "synology-url"))
+;                   (params (append `(("api" . ,api)
+;                                     ("version" . "2")
+;                                     ("method" . ,method)
+;                                     ("_sid" . ,sid))
+;                                   (loop for (key value) on additional-params by #'cddr
+;                                         collect (cons key value))))
+;                   (query (with-output-to-string (s)
+;                            (loop for (key . val) in params
+;                                  for i from 0
+;                                  do (unless (zerop i) (write-char #\& s))
+;                                  (write-string key s)
+;                                  (write-char #\= s)
+;                                  (write-string (quri:url-encode (princ-to-string val)) s))))
+;                   (full-url (format nil "~a/webapi/entry.cgi?~a" url query)))
+;              (multiple-value-bind (body status)
+;                  (dex:get full-url :insecure t)   ; только URL и :insecure
+;                (if (= status 200)
+;                    (let ((json (cl-json:decode-json-from-string body)))
+;                      (if (cdr (assoc :success json))
+;                          (cdr (assoc :data json))
+;                          (if (and (cdr (assoc :error json))
+;                                   (equal (cdr (assoc :code (cdr (assoc :error json)))) 401))
+;                              (throw 'need-relogin nil)
+;                              (error "API error ~a: ~a" api json))))
+;                    (error "HTTP error ~a calling ~a" status api))))))
+;     (catch 'need-relogin
+;       (let ((sid (ensure-sid)))
+;         (return-from call-filestation-api (do-call sid))))
+;     (refresh-sid)
+;     (do-call *sid*)))
+;;;;;;;;;;;;;;;
+
+
 (defun call-filestation-api (api method &rest additional-params)
-  (flet ((do-call (sid)
-           (let* ((url (format nil "~a/webapi/entry.cgi" *synology-url*))
+  (flet ((build-query-string (params)
+           (with-output-to-string (s)
+             (loop for (key . val) in params
+                   for i from 0
+                   do (unless (zerop i) (write-char #\& s))
+                   (write-string (quri:url-encode key) s)
+                   (write-char #\= s)
+                   (write-string (quri:url-encode (princ-to-string val)) s))))
+         (do-call (sid)
+           (let* ((base-url (format nil "~a/webapi/entry.cgi" *synology-url*))
                   (params (append `(("api" . ,api)
                                     ("version" . "2")
                                     ("method" . ,method)
                                     ("_sid" . ,sid))
                                   (loop for (key value) on additional-params by #'cddr
                                         collect (cons key value)))))
-             (multiple-value-bind (body status)
-                 (dexador:get url :query params :ssl-verify *verify-ssl*)
-               (if (= status 200)
-                   (let ((json (cl-json:decode-json-from-string body :json-symbols t)))
-                     (if (and (gethash "success" json) (gethash "success" json))
-                         (gethash "data" json)
-                         (if (and (gethash "error" json)
-                                  (equal (gethash "code" (gethash "error" json)) 401))
-                             (throw 'need-relogin nil)
-                             (error "Ошибка API ~a: ~a" api json))))
-                   (error "HTTP ошибка ~a при вызове ~a" status api))))))
+             (let ((url (format nil "~a?~a" base-url (build-query-string params))))
+               (multiple-value-bind (body status)
+                   (dex:get url :want-string t :insecure t)
+                 (if (= status 200)
+                     (let ((json (cl-json:decode-json-from-string body)))
+                       (if (and (gethash "success" json) (gethash "success" json))
+                           (gethash "data" json)
+                           (if (and (gethash "error" json)
+                                    (equal (gethash "code" (gethash "error" json)) 401))
+                               (throw 'need-relogin nil)
+                               (error "Ошибка API ~a: ~a" api json))))
+                   (error "HTTP ошибка ~a при вызове ~a" status api)))))))
     (catch 'need-relogin
       (let ((sid (ensure-sid)))
         (return-from call-filestation-api (do-call sid))))
     (refresh-sid)
     (do-call *sid*)))
+
+
+
+
+
+
+
+
 
 ;; ============================================
 ;; Инструменты MCP
@@ -134,19 +268,54 @@
   (call-filestation-api "SYNO.FileStation.List" "list"
                         "folder_path" path
                         "additional" "[\"real_path\",\"size\",\"owner\",\"time\",\"perm\"]"))
+;;;;;;;;;;;dick pick;;;;;;;;;;;;
+; (defun read-file (path)
+;   (let* ((sid (ensure-sid))
+;          (url (config-value "synology-url"))
+;          (params `(("api" . "SYNO.FileStation.Download")
+;                    ("version" . "2")
+;                    ("method" . "download")
+;                    ("_sid" . ,sid)
+;                    ("path" . ,path)
+;                    ("mode" . "open")))
+;          (query (with-output-to-string (s)
+;                   (loop for (key . val) in params
+;                         for i from 0
+;                         do (unless (zerop i) (write-char #\& s))
+;                         (write-string key s)
+;                         (write-char #\= s)
+;                         (write-string (quri:url-encode (princ-to-string val)) s))))
+;          (full-url (format nil "~a/webapi/entry.cgi?~a" url query)))
+;     (multiple-value-bind (body status)
+;         (dex:get full-url :insecure t)
+;       (if (= status 200) body (error "Read file error: HTTP ~a" status)))))
+;;;;;;;;;;;;;;;;;;;;;;
+
+
 
 (defun read-file (path)
   (let ((sid (ensure-sid)))
-    (let ((url (format nil "~a/webapi/entry.cgi" *synology-url*))
-          (params `(("api" . "SYNO.FileStation.Download")
-                    ("version" . "2")
-                    ("method" . "download")
-                    ("_sid" . ,sid)
-                    ("path" . ,path)
-                    ("mode" . "open"))))
+    (let* ((base-url (format nil "~a/webapi/entry.cgi" *synology-url*))
+           (params `(("api" . "SYNO.FileStation.Download")
+                     ("version" . "2")
+                     ("method" . "download")
+                     ("_sid" . ,sid)
+                     ("path" . ,path)
+                     ("mode" . "open")))
+           (url (with-output-to-string (s)
+                  (write-string base-url s)
+                  (write-char #\? s)
+                  (loop for (key . val) in params
+                        for i from 0
+                        do (unless (zerop i) (write-char #\& s))
+                        (write-string (quri:url-encode key) s)
+                        (write-char #\= s)
+                        (write-string (quri:url-encode (princ-to-string val)) s)))))
       (multiple-value-bind (body status)
-          (dexador:get url :query params :ssl-verify *verify-ssl*)
+          (dex:get url :want-string t :insecure t)
         (if (= status 200) body (error "Ошибка чтения файла: HTTP ~a" status))))))
+
+
 
 (defun search-files (path pattern)
   (call-filestation-api "SYNO.FileStation.Search" "start"
@@ -202,6 +371,19 @@
                                (:required . ("path" "pattern")))))))
     (send-json-response id `((:tools . ,tools)))))
 
+
+(defun process-json-request (json)
+  (let* ((method (cdr (assoc :method json)))
+         (id (cdr (assoc :id json)))
+         (params (cdr (assoc :params json))))
+    (cond
+      ((string= method "tools/list") (handle-tools-list id))
+      ((string= method "tools/call")
+       (let ((tool-name (cdr (assoc :name params)))
+             (args (cdr (assoc :arguments params))))
+         (handle-tools-call id tool-name (or args nil))))
+      (t (send-json-error id -32601 (format nil "Unknown method: ~a" method))))))
+
 (defun handle-tools-call (id name arguments)
   (handler-case
       (let ((result
@@ -215,52 +397,66 @@
                ((string= name "search_files")
                 (make-tool-result (alist->json (search-files (cdr (assoc :path arguments))
                                                              (cdr (assoc :pattern arguments))))))
-               (t (send-json-error id -32601 "Метод не найден")))))
+               (t (send-json-error id -32601 "Method not found")))))
         (send-json-response id result))
-    (error (e) (send-json-error id -32000 (format nil "Ошибка: ~a" e)))))
-
-(defun process-json-request (json)
-  (let* ((method (cdr (assoc :method json)))
-         (id (cdr (assoc :id json)))
-         (params (cdr (assoc :params json))))
-    (cond
-      ((string= method "tools/list") (handle-tools-list id))
-      ((string= method "tools/call")
-       (let ((tool-name (cdr (assoc :name params)))
-             (args (cdr (assoc :arguments params))))
-         (handle-tools-call id tool-name (or args nil))))
-      (t (send-json-error id -32601 (format nil "Неизвестный метод: ~a" method))))))
+    (error (e) (send-json-error id -32000 (format nil "Error: ~a" e)))))
 
 ;; ============================================
-;; Обработчики HTTP (без define-easy-handler)
+;; Обработчики HTTP (обычные функции с одним аргументом)
 ;; ============================================
 
-(defun hello-handler (request)
-  (declare (ignore request))
-  (setf (content-type*) "text/plain")
+(define-easy-handler (hello-handler :uri "/hello") ()
+  (setf (return-code*) 200
+        (content-type*) "text/plain")
   "hello")
 
-(defun mcp-handler (request)
-  (declare (ignore request))
-  (if (string= (request-method*) "POST")
-      (handler-case
+
+(defun set-config-vars ()
+  (dolist (pair '((:synology-url . "synology-url")
+                  (:synology-username . "synology-username")
+                  (:synology-password . "synology-password")))
+    (let* ((key (car pair))
+           (var-name-str (cdr pair))
+           (symbol (intern (string-upcase (format nil "*~A*" var-name-str)) :mcp-sinology))
+           (value (config-value key)))
+      (setf (symbol-value symbol) value))))
+
+
+
+(defun test-connection ()
+  (load-config)
+  ;; Устанавливаем глобальные переменные из конфига
+  (setf *synology-url* (config-value "synology-url")
+        *synology-username* (config-value "synology-username")
+        *synology-password* (config-value "synology-password"))
+  ;; Отладочный вывод
+  (format t "~&[DEBUG] test-connection: url=~S, user=~S, pass=~S~%" 
+          *synology-url* *synology-username* *synology-password*)
+  (let ((sid (login)))
+    (format t "~&Login successful, SID: ~A~%" sid)
+    (let ((result (list-files "/")))
+      (format t "~&List files result: ~A~%" result)))
+  (values))
+
+(define-easy-handler (mcp-handler :uri "/mcp") ()
+  (handler-case
+      (if (string= (request-method*) "POST")
           (let* ((body (raw-post-data :force-text t))
-                 (json (cl-json:decode-json-from-string body :json-symbols t))
-                 (response (process-json-request json)))
-            (setf (content-type*) "application/json")
-            response)
-        (error (e)
-          (setf (return-code*) 500)
-          (format nil "Internal error: ~a" e)))
-      (progn
-        (setf (return-code*) 405)
-        "Method Not Allowed")))
-
-;; Регистрируем обработчики через диспетчеры (очищаем старые)
-(setf hunchentoot:*dispatch-table*
-      (list (hunchentoot:create-prefix-dispatcher "/hello" #'hello-handler)
-            (hunchentoot:create-prefix-dispatcher "/mcp" #'mcp-handler)))
-
+                 (json (cl-json:decode-json-from-string body)))  ; без :json-symbols
+            (format t "~&JSON: ~S" json)
+            (format t "~&JSON keys: ~S" (mapcar #'car json))
+            (let ((response (process-json-request json)))
+              (setf (return-code*) 200
+                    (content-type*) "application/json")
+              response))
+          (progn
+            (setf (return-code*) 405)
+            "Method Not Allowed"))
+    (error (e)
+      (format t "~&!!! Error: ~A" e)
+      #+sbcl (sb-debug:backtrace 20)
+      (setf (return-code*) 500)
+      (format nil "Internal error: ~a" e))))
 ;; ============================================
 ;; Запуск / остановка
 ;; ============================================
@@ -289,7 +485,6 @@
   (setf *synology-url* (config-value "synology-url"))
   (setf *synology-username* (config-value "synology-username"))
   (setf *synology-password* (config-value "synology-password"))
-  (setf *verify-ssl* (not (string= (config-value "verify-ssl") "false")))
   (setf *server-port* (parse-integer (format nil "~a" (config-value "server-port"))))
   (start-server :port *server-port*)
   (loop (sleep 10)))
