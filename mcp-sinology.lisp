@@ -215,42 +215,29 @@
 
 
 (defun call-filestation-api (api method &rest additional-params)
-  (flet ((build-query-string (params)
-           (with-output-to-string (s)
-             (loop for (key . val) in params
-                   for i from 0
-                   do (unless (zerop i) (write-char #\& s))
-                   (write-string (quri:url-encode key) s)
-                   (write-char #\= s)
-                   (write-string (quri:url-encode (princ-to-string val)) s))))
-         (do-call (sid)
-           (let* ((base-url (format nil "~a/webapi/entry.cgi" *synology-url*))
-                  (params (append `(("api" . ,api)
-                                    ("version" . "2")
-                                    ("method" . ,method)
-                                    ("_sid" . ,sid))
-                                  (loop for (key value) on additional-params by #'cddr
-                                        collect (cons key value)))))
-             (let ((url (format nil "~a?~a" base-url (build-query-string params))))
+  (labels ((do-call (sid)
+             (let* ((base-url (format nil "~a/webapi/entry.cgi" *synology-url*))
+                    (params (append `(("api" . ,api)
+                                      ("version" . "2")
+                                      ("method" . ,method)
+                                      ("_sid" . ,sid))
+                                    (loop for (key value) on additional-params by #'cddr
+                                          collect (cons key value))))
+                    (url (format nil "~a?~a" base-url (build-query-string params))))
                (multiple-value-bind (body status)
-                   (dex:get url :want-string t :insecure t)
+                   (dex:get url :force-string t :insecure t)
                  (if (= status 200)
                      (let ((json (cl-json:decode-json-from-string body)))
-                       (if (and (gethash "success" json) (gethash "success" json))
-                           (gethash "data" json)
-                           (if (and (gethash "error" json)
-                                    (equal (gethash "code" (gethash "error" json)) 401))
+                       (if (cdr (assoc :success json))
+                           (cdr (assoc :data json))
+                           (if (and (cdr (assoc :error json))
+                                    (equal (cdr (assoc :code (cdr (assoc :error json)))) 401))
                                (throw 'need-relogin nil)
                                (error "Ошибка API ~a: ~a" api json))))
-                   (error "HTTP ошибка ~a при вызове ~a" status api)))))))
+                     (error "HTTP ошибка ~a при вызове ~a" status api))))))
     (catch 'need-relogin
       (let ((sid (ensure-sid)))
-        (return-from call-filestation-api (do-call sid))))
-    (refresh-sid)
-    (do-call *sid*)))
-
-
-
+        (do-call sid)))))
 
 
 
@@ -292,6 +279,16 @@
 ;;;;;;;;;;;;;;;;;;;;;;
 
 
+(defun build-query-string (params)
+  (with-output-to-string (s)
+    (loop for (key . val) in params
+          for i from 0
+          do (unless (zerop i) (write-char #\& s))
+          (write-string (quri:url-encode key) s)
+          (write-char #\= s)
+          (write-string (quri:url-encode (princ-to-string val)) s))))
+
+
 
 (defun read-file (path)
   (let ((sid (ensure-sid)))
@@ -302,19 +299,10 @@
                      ("_sid" . ,sid)
                      ("path" . ,path)
                      ("mode" . "open")))
-           (url (with-output-to-string (s)
-                  (write-string base-url s)
-                  (write-char #\? s)
-                  (loop for (key . val) in params
-                        for i from 0
-                        do (unless (zerop i) (write-char #\& s))
-                        (write-string (quri:url-encode key) s)
-                        (write-char #\= s)
-                        (write-string (quri:url-encode (princ-to-string val)) s)))))
+           (url (format nil "~a?~a" base-url (build-query-string params))))
       (multiple-value-bind (body status)
-          (dex:get url :want-string t :insecure t)
+          (dex:get url :force-string t :insecure t)
         (if (= status 200) body (error "Ошибка чтения файла: HTTP ~a" status))))))
-
 
 
 (defun search-files (path pattern)
@@ -454,7 +442,7 @@
             "Method Not Allowed"))
     (error (e)
       (format t "~&!!! Error: ~A" e)
-      #+sbcl (sb-debug:backtrace 20)
+#+sbcl (sb-debug:print-backtrace :count 20)
       (setf (return-code*) 500)
       (format nil "Internal error: ~a" e))))
 ;; ============================================
