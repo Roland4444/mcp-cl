@@ -102,66 +102,6 @@
                 (error "Login failed: ~a" json))))))))
 
 
-; (defun login ()
-;   (let* ((url (config-value "synology-url"))
-;          (user (config-value "synology-username"))
-;          (pass (config-value "synology-password")))
-;     (format t "~&[DEBUG] login: url=~S, user=~S, pass=~S~%" url user pass)
-;     (unless (and url user pass)
-;       (error "Synology credentials not set. Check config file."))
-;     (let ((params `(("api" . "SYNO.API.Auth")
-;                     ("version" . "3")
-;                     ("method" . "login")
-;                     ("account" . ,user)
-;                     ("passwd" . ,pass)
-;                     ("session" . "FileStation")
-;                     ("format" . "cookie"))))
-;       (let ((body (with-output-to-string (s)
-;                     (loop for (key . val) in params
-;                           for i from 0
-;                           do (unless (zerop i) (write-char #\& s))
-;                           (write-string key s)
-;                           (write-char #\= s)
-;                           (write-string (quri:url-encode (princ-to-string val)) s)))))
-;         (multiple-value-bind (response status headers)
-;             (dex:post (format nil "~a/webapi/auth.cgi" url)
-;                       :content body
-;                       :headers '(("Content-Type" . "application/x-www-form-urlencoded"))
-;                       :insecure t)   ; <-- правильный ключ
-;           (declare (ignore status headers))
-;           (let ((json (cl-json:decode-json-from-string response)))
-;             (if (cdr (assoc :success json))
-;                 (cdr (assoc :sid (cdr (assoc :data json))))
-;                 (error "Login failed: ~a" json))))))))
-
-
-
-; (defun login ()
-;   (let ((url (format nil "~a/webapi/auth.cgi" *synology-url*))
-;         (params `(("api" . "SYNO.API.Auth")
-;                   ("version" . "3")
-;                   ("method" . "login")
-;                   ("account" . ,*synology-username*)
-;                   ("passwd" . ,*synology-password*)
-;                   ("session" . "FileStation")
-;                   ("format" . "cookie"))))
-;     (multiple-value-bind (body status headers)
-;         (dex:post url 
-;                   :content (with-output-to-string (s)
-;                              (loop for (key . val) in params
-;                                    for i from 0
-;                                    do (unless (zerop i) (write-char #\& s))
-;                                    (write-string key s)
-;                                    (write-char #\= s)
-;                                    (write-string (quri:url-encode (princ-to-string val) :utf-8) s)))
-;                   :headers '(("Content-Type" . "application/x-www-form-urlencoded"))
-;                   :want-string t)
-;       (declare (ignore status headers))
-;       (let ((json (cl-json:decode-json-from-string body)))
-;         (if (and (gethash "success" json) (gethash "success" json))
-;             (gethash "sid" (gethash "data" json))
-;             (error "Ошибка входа: ~a" json))))))
-
 (defun ensure-sid ()
   (with-lock-held (*sid-lock*)
     (unless *sid* (setf *sid* (login)))
@@ -175,43 +115,6 @@
 ;; API вызовы
 ;; ============================================
 
-
-
-;;;dickpic
-; (defun call-filestation-api (api method &rest additional-params)
-;   (flet ((do-call (sid)
-;            (let* ((url (config-value "synology-url"))
-;                   (params (append `(("api" . ,api)
-;                                     ("version" . "2")
-;                                     ("method" . ,method)
-;                                     ("_sid" . ,sid))
-;                                   (loop for (key value) on additional-params by #'cddr
-;                                         collect (cons key value))))
-;                   (query (with-output-to-string (s)
-;                            (loop for (key . val) in params
-;                                  for i from 0
-;                                  do (unless (zerop i) (write-char #\& s))
-;                                  (write-string key s)
-;                                  (write-char #\= s)
-;                                  (write-string (quri:url-encode (princ-to-string val)) s))))
-;                   (full-url (format nil "~a/webapi/entry.cgi?~a" url query)))
-;              (multiple-value-bind (body status)
-;                  (dex:get full-url :insecure t)   ; только URL и :insecure
-;                (if (= status 200)
-;                    (let ((json (cl-json:decode-json-from-string body)))
-;                      (if (cdr (assoc :success json))
-;                          (cdr (assoc :data json))
-;                          (if (and (cdr (assoc :error json))
-;                                   (equal (cdr (assoc :code (cdr (assoc :error json)))) 401))
-;                              (throw 'need-relogin nil)
-;                              (error "API error ~a: ~a" api json))))
-;                    (error "HTTP error ~a calling ~a" status api))))))
-;     (catch 'need-relogin
-;       (let ((sid (ensure-sid)))
-;         (return-from call-filestation-api (do-call sid))))
-;     (refresh-sid)
-;     (do-call *sid*)))
-;;;;;;;;;;;;;;;
 
 
 (defun call-filestation-api (api method &rest additional-params)
@@ -255,29 +158,6 @@
   (call-filestation-api "SYNO.FileStation.List" "list"
                         "folder_path" path
                         "additional" "[\"real_path\",\"size\",\"owner\",\"time\",\"perm\"]"))
-;;;;;;;;;;;dick pick;;;;;;;;;;;;
-; (defun read-file (path)
-;   (let* ((sid (ensure-sid))
-;          (url (config-value "synology-url"))
-;          (params `(("api" . "SYNO.FileStation.Download")
-;                    ("version" . "2")
-;                    ("method" . "download")
-;                    ("_sid" . ,sid)
-;                    ("path" . ,path)
-;                    ("mode" . "open")))
-;          (query (with-output-to-string (s)
-;                   (loop for (key . val) in params
-;                         for i from 0
-;                         do (unless (zerop i) (write-char #\& s))
-;                         (write-string key s)
-;                         (write-char #\= s)
-;                         (write-string (quri:url-encode (princ-to-string val)) s))))
-;          (full-url (format nil "~a/webapi/entry.cgi?~a" url query)))
-;     (multiple-value-bind (body status)
-;         (dex:get full-url :insecure t)
-;       (if (= status 200) body (error "Read file error: HTTP ~a" status)))))
-;;;;;;;;;;;;;;;;;;;;;;
-
 
 (defun build-query-string (params)
   (with-output-to-string (s)
