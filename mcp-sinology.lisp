@@ -383,7 +383,7 @@
        `((:jsonrpc . "2.0") (:id . nil)
          (:error . ((:code . -32000)
                     (:message . ,(format nil "Worker error: ~a" e)))))))))
-
+;;;;
 (defun start-worker ()
   (let ((url (config-value "amqp-url"))
         (queue-name (config-value "request-queue")))
@@ -398,8 +398,8 @@
              (handler-case
                  (let* ((body (cl-bunny:message-body-string message))
                         (props (cl-bunny:message-properties message))
-                        (reply-to (getf props :reply-to))
-                        (correlation-id (getf props :correlation-id)))
+                        (reply-to (cl-amqp:property-reply-to props))
+                        (correlation-id (cl-amqp:property-correlation-id props)))
                    (format t "~&[RABBITMQ] Received: ~a~%" body)
                    (let ((response (handle-rabbitmq-request body)))
                      (when reply-to
@@ -411,6 +411,8 @@
                  (format t "~&[RABBITMQ] Handler error: ~a~%" e)))))
           (format t "~&[RABBITMQ] Worker running. Ctrl+C to stop.~%")
           (cl-bunny:consume :one-shot nil :timeout nil))))))
+
+;;;;          
 
 (defun main-worker ()
   (load-config)
