@@ -397,9 +397,8 @@
            (lambda (message)
              (handler-case
                  (let* ((body (cl-bunny:message-body-string message))
-                        (props (cl-bunny:message-properties message))
-                        (reply-to (cl-amqp:property-reply-to props))
-                        (correlation-id (cl-amqp:property-correlation-id props)))
+                        (reply-to (cl-bunny:message-reply-to message))
+                        (correlation-id (cl-bunny:message-correlation-id message)))
                    (format t "~&[RABBITMQ] Received: ~a~%" body)
                    (let ((response (handle-rabbitmq-request body)))
                      (when reply-to
