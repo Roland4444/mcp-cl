@@ -3,16 +3,22 @@
 
 (require :asdf)
 
+(setf asdf:*compile-file-warnings-behaviour* :ignore)
+(setf asdf:*compile-file-failure-behaviour* :ignore)
+
 (asdf:load-system :hunchentoot)
 (asdf:load-system :cl-json)
 (asdf:load-system :dexador)
 (asdf:load-system :quri)
+(asdf:load-system :cl-amqp)
+(asdf:load-system :cl-bunny)
 
 
 (defpackage #:mcp-sinology
 
   (:use #:cl #:hunchentoot #:cl-json)
-  (:export #:main #:start-server #:stop-server  #:test-connection))
+  (:export #:main #:main-worker #:start-server #:stop-server #:test-connection)
+)
 
 (in-package #:mcp-sinology)
 
@@ -25,7 +31,11 @@
   `(("synology-url" . "https://127.0.0.1:5001")
     ("synology-username" . "user")
     ("synology-password" . "pass")
-    ("server-port" . 8080)))
+    ("server-port" . 8080)
+    ("amqp-url" . "amqps://user:pass@host:5671/mcp_vhost")
+    ("request-queue" . "mcp_requests")
+   )
+)
 
 (defun save-config (&optional (filename "config-mcp.lisp"))
   (with-open-file (out filename :direction :output :if-exists :supersede :external-format :utf-8)
@@ -350,12 +360,62 @@
 
 (defun main ()
   (load-config)
-  (setf *synology-url* (config-value "synology-url"))
-  (setf *synology-username* (config-value "synology-username"))
-  (setf *synology-password* (config-value "synology-password"))
-  (setf *server-port* (parse-integer (format nil "~a" (config-value "server-port"))))
+  (init-from-config)
   (start-server :port *server-port*)
   (loop (sleep 10)))
+
+(defun init-from-config ()
+  (setf *synology-url* (config-value "synology-url")
+        *synology-username* (config-value "synology-username")
+        *synology-password* (config-value "synology-password")
+        *server-port* (parse-integer (format nil "~a" (config-value "server-port")))))
+
+(defun handle-rabbitmq-request (body)
+  "BODY — JSON-строка запроса. Возвращает JSON-строку ответа."
+  (handler-case
+      (let* ((json (cl-json:decode-json-from-string body))
+             (response-json (process-json-request json)))
+        (format t "~&[RABBITMQ] Request processed~%")
+        response-json)
+    (error (e)
+      (format t "~&[RABBITMQ] ERROR: ~a~%" e)
+      (cl-json:encode-json-to-string
+       `((:jsonrpc . "2.0") (:id . nil)
+         (:error . ((:code . -32000)
+                    (:message . ,(format nil "Worker error: ~a" e)))))))))
+
+(defun start-worker ()
+  (let ((url (config-value "amqp-url"))
+        (queue-name (config-value "request-queue")))
+    (format t "~&[RABBITMQ] Connecting to ~a~%" url)
+    (cl-bunny:with-connection (url)
+      (cl-bunny:with-channel ()
+        (let ((q (cl-bunny:queue.declare :name queue-name :durable t)))
+          (format t "~&[RABBITMQ] Listening on ~a~%" queue-name)
+          (cl-bunny:subscribe
+           q
+           (lambda (message)
+             (handler-case
+                 (let* ((body (cl-bunny:message-body-string message))
+                        (props (cl-bunny:message-properties message))
+                        (reply-to (getf props :reply-to))
+                        (correlation-id (getf props :correlation-id)))
+                   (format t "~&[RABBITMQ] Received: ~a~%" body)
+                   (let ((response (handle-rabbitmq-request body)))
+                     (when reply-to
+                       (cl-bunny:publish (cl-bunny:exchange.default) response
+                                         :routing-key reply-to
+                                         :properties (list :correlation-id correlation-id))
+                       (format t "~&[RABBITMQ] Reply sent~%"))))
+               (error (e)
+                 (format t "~&[RABBITMQ] Handler error: ~a~%" e)))))
+          (format t "~&[RABBITMQ] Worker running. Ctrl+C to stop.~%")
+          (cl-bunny:consume :one-shot nil :timeout nil))))))
+
+(defun main-worker ()
+  (load-config)
+  (init-from-config)
+  (start-worker))
 
   ;;; sbcl --noinform --disable-debugger --load mcp-sinology.lisp --eval "(mcp-sinology:main)"
   ;;; sbcl --load mcp-sinology.lisp    --eval "(sb-ext:save-lisp-and-die \"mcp-sinology\" :toplevel #'mcp-sinology:main :executable t :purify t)"
