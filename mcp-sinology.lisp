@@ -219,69 +219,71 @@
   `((:content . ((:type . "text") (:text . ,text)))))
 
 (defun handle-tools-list (id)
-  (let ((tools
-         (list
-          (list :name "list_files"
-                :description "Показать содержимое папки на Synology NAS"
-                :inputSchema `((:type . "object")
-                               (:properties . ((:path . ((:type . "string")
-                                                         (:description . "Путь к папке")))))
-                               (:required . "path")))
-          (list :name "get_file_info"
-                :description "Получить метаданные файла/папки"
-                :inputSchema `((:type . "object")
-                               (:properties . ((:path . ((:type . "string")
-                                                         (:description . "Путь")))))
-                               (:required . "path")))
-          (list :name "read_file"
-                :description "Прочитать содержимое текстового файла"
-                :inputSchema `((:type . "object")
-                               (:properties . ((:path . ((:type . "string")
-                                                         (:description . "Путь к файлу")))))
-                               (:required . "path")))
-          (list :name "search_files"
-                :description "Поиск файлов по шаблону (рекурсивно)"
-                :inputSchema `((:type . "object")
-                               (:properties . ((:path . ((:type . "string")
-                                                         (:description . "Папка")))
-                                               (:pattern . ((:type . "string")
-                                                            (:description . "Шаблон")))))
-                               (:required . ("path" "pattern")))))))
-    (send-json-response id `((:tools . ,tools)))))
+  (let* ((tool-1 "{\"name\":\"list_files\",\"description\":\"Показать содержимое папки на Synology NAS\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Путь к папке\"}},\"required\":[\"path\"]}}")
+         (tool-2 "{\"name\":\"get_file_info\",\"description\":\"Получить метаданные файла или папки\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Путь\"}},\"required\":[\"path\"]}}")
+         (tool-3 "{\"name\":\"read_file\",\"description\":\"Прочитать содержимое текстового файла\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Путь к файлу\"}},\"required\":[\"path\"]}}")
+         (tool-4 "{\"name\":\"search_files\",\"description\":\"Поиск файлов по шаблону (рекурсивно)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Папка\"},\"pattern\":{\"type\":\"string\",\"description\":\"Шаблон\"}},\"required\":[\"path\",\"pattern\"]}}")
+         (tools-array (format nil "[~a,~a,~a,~a]" tool-1 tool-2 tool-3 tool-4)))
+    (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"tools\":~a}}"
+            (if (numberp id) id (format nil "\"~a\"" id))
+            tools-array)))
 
+
+(defun send-json-response-raw (id result-json-string)
+  (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
+          (if (numberp id) id (format nil "\"~a\"" id))
+          result-json-string))
 
 (defun process-json-request (json)
   (let* ((method (cdr (assoc :method json)))
          (id (cdr (assoc :id json)))
          (params (cdr (assoc :params json))))
     (cond
-      ((string= method "tools/list") (handle-tools-list id))
+      ((string= method "initialize")
+          (let* ((params (cdr (assoc :params json)))
+                 (client-version (cdr (assoc :protocolVersion params))))
+                (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"protocolVersion\":\"~a\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"synology-mcp\",\"version\":\"0.1.0\"}}}"
+           (if (numberp id) id (format nil "\"~a\"" id))
+           (or client-version "2024-11-05"))))
+
+      ((string= method "notifications/initialized")
+       nil)
+
+      ((string= method "tools/list")
+       (handle-tools-list id))
+
       ((string= method "tools/call")
        (let ((tool-name (cdr (assoc :name params)))
              (args (cdr (assoc :arguments params))))
          (handle-tools-call id tool-name (or args nil))))
+
       (t (send-json-error id -32601 (format nil "Unknown method: ~a" method))))))
 
 (defun handle-tools-call (id name arguments)
   (handler-case
-      (let ((result
+      (let ((text
              (cond
                ((string= name "list_files")
-                (make-tool-result (alist->json (list-files (cdr (assoc :path arguments))))))
+                (alist->json (list-files (cdr (assoc :path arguments)))))
                ((string= name "get_file_info")
-                (make-tool-result (alist->json (get-file-info (cdr (assoc :path arguments))))))
+                (alist->json (get-file-info (cdr (assoc :path arguments)))))
                ((string= name "read_file")
-                (make-tool-result (read-file (cdr (assoc :path arguments)))))
+                (read-file (cdr (assoc :path arguments))))
                ((string= name "search_files")
-                (make-tool-result (alist->json (search-files (cdr (assoc :path arguments))
-                                                             (cdr (assoc :pattern arguments))))))
-               (t (send-json-error id -32601 "Method not found")))))
-        (send-json-response id result))
-    (error (e) (send-json-error id -32000 (format nil "Error: ~a" e)))))
+                (alist->json (search-files (cdr (assoc :path arguments))
+                                           (cdr (assoc :pattern arguments)))))
+               (t (error "Unknown tool: ~a" name)))))
+        (format nil
+                "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":~a}]}}"
+                (if (numberp id) id (format nil "\"~a\"" id))
+                (cl-json:encode-json-to-string text)))
+    (error (e)
+      (format nil
+              "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32000,\"message\":~a}}"
+              (if (numberp id) id (format nil "\"~a\"" id))
+              (cl-json:encode-json-to-string (format nil "Error: ~a" e))))))
 
-;; ============================================
-;; Обработчики HTTP (обычные функции с одним аргументом)
-;; ============================================
+
 
 (define-easy-handler (hello-handler :uri "/hello") ()
   (setf (return-code*) 200
